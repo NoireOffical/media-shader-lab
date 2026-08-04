@@ -118,6 +118,7 @@ public:
                static_cast<double>(samples_.size());
     }
 
+    bool has_samples() const noexcept { return !samples_.empty(); }
     void clear() noexcept { samples_.clear(); }
 
 private:
@@ -196,6 +197,7 @@ public:
     }
 
     double average_ms() const noexcept { return samples_.average(); }
+    bool has_samples() const noexcept { return samples_.has_samples(); }
     void clear_samples() noexcept { samples_.clear(); }
 
 private:
@@ -377,20 +379,48 @@ public:
         readback_timer.collect();
         state.upload_submit_ms = upload_submit.average();
         state.gpu_shader_ms = shader_timer.average_ms();
-        state.readback_submit_ms = readback_submit.average();
-        state.pbo_map_wait_ms = state.asynchronous_pbo
-            ? pbo_map_wait.average()
-            : 0.0;
+        if (readback_submit.has_samples()) {
+            state.readback_metrics_available = true;
+            state.readback_submit_ms = readback_submit.average();
+            state.readback_gpu_available =
+                readback_timer.has_samples() && readback_timer.average_ms() > 0.0;
+            state.readback_gpu_ms = readback_timer.average_ms();
+            state.readback_used_pbo = readback_used_pbo;
+            state.pbo_wait_available =
+                readback_used_pbo && pbo_map_wait.has_samples();
+            state.pbo_map_wait_ms = pbo_map_wait.average();
+        }
+    }
+
+    void reset_profiling() {
+        upload_timer.resolve_all();
+        shader_timer.resolve_all();
+        readback_timer.resolve_all();
+        upload_timer.clear_samples();
+        shader_timer.clear_samples();
+        readback_timer.clear_samples();
+        upload_submit.clear();
+        readback_submit.clear();
+        pbo_map_wait.clear();
+        readback_used_pbo = false;
     }
 
     GpuPerformanceSummary profiling_summary() {
         upload_timer.resolve_all();
         shader_timer.resolve_all();
         readback_timer.resolve_all();
-        return GpuPerformanceSummary{upload_submit.average(),
-                                     shader_timer.average_ms(),
-                                     readback_submit.average(),
-                                     pbo_map_wait.average()};
+        GpuPerformanceSummary summary;
+        summary.upload_submit_ms = upload_submit.average();
+        summary.shader_ms = shader_timer.average_ms();
+        summary.readback_submit_ms = readback_submit.average();
+        summary.readback_gpu_ms = readback_timer.average_ms();
+        summary.pbo_map_wait_ms = pbo_map_wait.average();
+        summary.readback_sampled = readback_submit.has_samples();
+        summary.readback_gpu_sampled =
+            readback_timer.has_samples() && readback_timer.average_ms() > 0.0;
+        summary.pbo_wait_sampled = pbo_map_wait.has_samples();
+        summary.readback_used_pbo = readback_used_pbo;
+        return summary;
     }
 
     void ensure_video_texture(const VideoFrame& frame) {
@@ -703,6 +733,7 @@ public:
     bool readback_frame(const VideoFrame& frame,
                         bool asynchronous,
                         VideoFrame& output) {
+        readback_used_pbo = asynchronous;
         VideoFrame metadata;
         metadata.width = frame.width;
         metadata.height = frame.height;
@@ -872,9 +903,36 @@ public:
         ImGui::Text("Upload submit %.3f ms | Shader GPU %.3f ms",
                     state.upload_submit_ms,
                     state.gpu_shader_ms);
-        ImGui::Text("Readback submit %.3f ms | PBO wait %.3f ms",
-                    state.readback_submit_ms,
-                    state.pbo_map_wait_ms);
+        if (!state.readback_metrics_available) {
+            ImGui::TextDisabled("Readback: N/A (measured during export)");
+        } else {
+            const char* readback_label = state.export_in_progress
+                ? "Export readback"
+                : "Last export readback";
+            if (state.readback_gpu_available) {
+                ImGui::Text("%s: submit %.3f ms | GPU %.3f ms",
+                            readback_label,
+                            state.readback_submit_ms,
+                            state.readback_gpu_ms);
+            } else if (state.export_in_progress) {
+                ImGui::Text("%s: submit %.3f ms | GPU pending",
+                            readback_label,
+                            state.readback_submit_ms);
+            } else {
+                ImGui::Text("%s: submit %.3f ms | GPU N/A",
+                            readback_label,
+                            state.readback_submit_ms);
+            }
+            if (!state.readback_used_pbo) {
+                ImGui::TextDisabled("PBO map wait: N/A (synchronous readback)");
+            } else if (state.pbo_wait_available) {
+                ImGui::Text("PBO map wait %.3f ms", state.pbo_map_wait_ms);
+            } else if (state.export_in_progress) {
+                ImGui::TextDisabled("PBO map wait: pending");
+            } else {
+                ImGui::TextDisabled("PBO map wait: N/A (no completed sample)");
+            }
+        }
         if (!state.pipeline_history_ms.empty()) {
             ImGui::PlotLines("##pipeline_history",
                              state.pipeline_history_ms.data(),
@@ -1055,6 +1113,7 @@ public:
     SampleWindow pbo_map_wait;
     SampleWindow upload_submit;
     SampleWindow readback_submit;
+    bool readback_used_pbo = false;
     int export_width = 0;
     int export_height = 0;
     int width = 0;
@@ -1177,6 +1236,11 @@ bool GLRenderer::process(const VideoFrame& frame,
 bool GLRenderer::flush_process(VideoFrame& output) {
     glfwMakeContextCurrent(impl_->window);
     return impl_->flush_readback(output);
+}
+
+void GLRenderer::reset_profiling() {
+    glfwMakeContextCurrent(impl_->window);
+    impl_->reset_profiling();
 }
 
 GpuPerformanceSummary GLRenderer::profiling_summary() {

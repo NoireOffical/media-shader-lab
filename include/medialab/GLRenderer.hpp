@@ -23,7 +23,12 @@ struct GpuPerformanceSummary {
     double upload_submit_ms = 0.0;
     double shader_ms = 0.0;
     double readback_submit_ms = 0.0;
+    double readback_gpu_ms = 0.0;
     double pbo_map_wait_ms = 0.0;
+    bool readback_sampled = false;
+    bool readback_gpu_sampled = false;
+    bool pbo_wait_sampled = false;
+    bool readback_used_pbo = false;
 };
 
 struct InteractiveState {
@@ -42,7 +47,12 @@ struct InteractiveState {
     double upload_submit_ms = 0.0;
     double gpu_shader_ms = 0.0;
     double readback_submit_ms = 0.0;
+    double readback_gpu_ms = 0.0;
     double pbo_map_wait_ms = 0.0;
+    bool readback_metrics_available = false;
+    bool readback_gpu_available = false;
+    bool pbo_wait_available = false;
+    bool readback_used_pbo = false;
     std::vector<float> pipeline_history_ms;
     std::string input_path;
     int decoder_backend = 0;
@@ -89,6 +99,7 @@ public:
                  double elapsed_seconds,
                  VideoFrame& output);
     bool flush_process(VideoFrame& output);
+    void reset_profiling();
     GpuPerformanceSummary profiling_summary();
     std::string take_dropped_path();
 

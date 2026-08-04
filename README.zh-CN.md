@@ -343,7 +343,7 @@ ffmpeg -f lavfi \
 - `average_ssim`：编码后回解帧的平均 8×8 亮度 SSIM；
 - `average_vmaf`：编码后回解帧的平均 VMAF，并通过 `vmaf_model` 记录模型版本。
 
-交互面板额外显示上传提交时间、Timer Query 得到的 Shader GPU 时间、回读提交时间和 PBO 映射等待时间。VideoToolbox 对符合条件的 NV12 帧直接使用 IOSurface 双平面纹理；如像素格式或存储不兼容，则自动通过 `av_hwframe_transfer_data` 回退到系统内存。
+交互面板在预览阶段显示上传提交时间和 Timer Query 得到的 Shader GPU 时间。回读提交、回读 GPU Timer Query（驱动能返回非零结果时）与 PBO 映射等待只在导出/质量评估路径采样；不可用的指标显示 `N/A`，不会再把“没有样本”误报为零。VideoToolbox 对符合条件的 NV12 帧直接使用 IOSurface 双平面纹理；如像素格式或存储不兼容，则自动通过 `av_hwframe_transfer_data` 回退到系统内存。
 
 在 Apple M5 Pro、720p/30 FPS、300 帧 Edge Shader、VideoToolbox H.265 编码条件下，本次对照结果为：PBO 开启后吞吐从 236.16 FPS 提升至 303.41 FPS（约 +28.5%），回读提交从 1.019 ms 降至 0.030 ms；输出帧数、码量及 PSNR/SSIM/VMAF 与同步路径保持一致。该数字仅代表当前设备和测试素材。
 

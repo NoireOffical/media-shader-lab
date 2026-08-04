@@ -343,6 +343,10 @@ ExportResult export_processed_video(
     ui_state.export_in_progress = true;
     ui_state.export_progress = 0.0F;
     ui_state.status_message = "Exporting H.265 with " + parameters.encoder + "...";
+    ui_state.readback_metrics_available = false;
+    ui_state.readback_gpu_available = false;
+    ui_state.pbo_wait_available = false;
+    renderer.reset_profiling();
 
     medialab::VideoEncoder encoder(config);
     medialab::VideoFrame source;
@@ -429,6 +433,17 @@ ExportResult export_processed_video(
                                           filter_state);
         result.quality_evaluated = true;
     }
+    renderer.reset_profiling();
+    ui_state.upload_submit_ms = result.gpu.upload_submit_ms;
+    ui_state.gpu_shader_ms = result.gpu.shader_ms;
+    ui_state.readback_submit_ms = result.gpu.readback_submit_ms;
+    ui_state.readback_gpu_ms = result.gpu.readback_gpu_ms;
+    ui_state.pbo_map_wait_ms = result.gpu.pbo_map_wait_ms;
+    ui_state.readback_metrics_available = result.gpu.readback_sampled;
+    ui_state.readback_gpu_available = result.gpu.readback_gpu_sampled;
+    ui_state.readback_used_pbo = result.gpu.readback_used_pbo;
+    ui_state.pbo_wait_available =
+        result.gpu.pbo_wait_sampled && result.gpu.readback_used_pbo;
     return result;
 }
 
@@ -444,7 +459,12 @@ void print_export_result(const ExportParameters& parameters,
               << " upload_submit_ms=" << result.gpu.upload_submit_ms
               << " gpu_shader_ms=" << result.gpu.shader_ms
               << " readback_submit_ms=" << result.gpu.readback_submit_ms
-              << " pbo_map_wait_ms=" << result.gpu.pbo_map_wait_ms;
+              << " readback_gpu_ms=" << result.gpu.readback_gpu_ms
+              << " readback_gpu_available="
+              << (result.gpu.readback_gpu_sampled ? "true" : "false")
+              << " pbo_map_wait_ms=" << result.gpu.pbo_map_wait_ms
+              << " pbo_wait_available="
+              << (result.gpu.pbo_wait_sampled ? "true" : "false");
     if (result.quality_evaluated) {
         std::cout << " psnr_db=" << result.quality.average_psnr_db
                   << " ssim=" << result.quality.average_ssim;
@@ -620,9 +640,13 @@ int run_interactive(const Options& options) {
                         "Export complete: " + parameters.output;
                 }
             } catch (const std::exception& error) {
+                renderer.reset_profiling();
                 state.export_in_progress = false;
                 state.export_cancel_requested = false;
                 state.export_requested = false;
+                state.readback_metrics_available = false;
+                state.readback_gpu_available = false;
+                state.pbo_wait_available = false;
                 state.status_message = std::string("Export failed: ") +
                                        error.what();
             }

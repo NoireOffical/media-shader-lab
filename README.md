@@ -171,7 +171,7 @@ Export the processed frames as H.265, copy the source audio, and write a quality
 
 Use `--encoder hevc_videotoolbox --bitrate-kbps 6000` for macOS hardware encoding. Use `--no-audio` for a video-only output. The same controls are available in the interactive dashboard.
 
-Use `--decoder videotoolbox` to select macOS hardware decoding. Eligible NV12 frames use the IOSurface zero-copy path automatically; `--no-zero-copy` forces the CPU-transfer baseline. Use `--no-pbo` to run the synchronous upload/readback baseline. The dashboard reports upload submission, exact GPU Shader, readback submission, and PBO map-wait time.
+Use `--decoder videotoolbox` to select macOS hardware decoding. Eligible NV12 frames use the IOSurface zero-copy path automatically; `--no-zero-copy` forces the CPU-transfer baseline. Use `--no-pbo` to run the synchronous upload/readback baseline. The dashboard reports upload submission and exact GPU Shader time during preview. Readback submission, readback GPU Timer Query (when the driver exposes a non-zero result), and PBO map-wait are sampled only by export/quality paths; the dashboard shows `N/A` for unavailable samples instead of presenting them as zero.
 
 ## Reproducible benchmark
 
