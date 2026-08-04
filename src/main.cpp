@@ -40,6 +40,7 @@ struct Options {
     bool headless = false;
     bool sync_to_pts = true;
     bool asynchronous_pbo = true;
+    bool zero_copy = true;
 };
 
 void print_help() {
@@ -53,6 +54,7 @@ void print_help() {
         << "  --max-frames N       stop after N decoded frames\n"
         << "  --no-sync            process as fast as possible instead of following PTS\n"
         << "  --no-pbo             use synchronous texture upload/readback\n"
+        << "  --no-zero-copy       transfer VideoToolbox frames through CPU memory\n"
         << "  --metrics-output P   write the final metrics report as JSON\n"
         << "  --snapshot P         render one frame to a binary PPM image\n"
         << "  --ui-snapshot P      render one frame including the control panel\n"
@@ -118,6 +120,8 @@ Options parse_options(int argc, char** argv) {
             options.sync_to_pts = false;
         } else if (argument == "--no-pbo") {
             options.asynchronous_pbo = false;
+        } else if (argument == "--no-zero-copy") {
+            options.zero_copy = false;
         } else if (argument == "--metrics-output") {
             options.metrics_output = next_value();
         } else if (argument == "--snapshot") {
@@ -218,6 +222,7 @@ struct ExportParameters {
     std::size_t max_frames = 0;
     medialab::DecoderBackend decoder_backend =
         medialab::DecoderBackend::Software;
+    bool zero_copy = true;
 };
 
 struct ExportResult {
@@ -226,6 +231,7 @@ struct ExportResult {
     medialab::GpuPerformanceSummary gpu;
     bool quality_evaluated = false;
     bool cancelled = false;
+    bool decoder_zero_copy = false;
 };
 
 medialab::QualitySummary evaluate_quality(
@@ -312,7 +318,9 @@ ExportResult export_processed_video(
     medialab::GLRenderer& renderer,
     medialab::InteractiveState& ui_state,
     bool show_progress_ui) {
-    medialab::VideoDecoder decoder(input_path, parameters.decoder_backend);
+    medialab::VideoDecoder decoder(input_path,
+                                    parameters.decoder_backend,
+                                    parameters.zero_copy);
     medialab::EncoderConfig config;
     config.output_path = parameters.output;
     config.source_path = input_path;
@@ -394,6 +402,7 @@ ExportResult export_processed_video(
     ExportResult result;
     result.encoder = encoder.finish();
     result.gpu = renderer.profiling_summary();
+    result.decoder_zero_copy = decoder.zero_copy_active();
     if (!show_progress_ui) {
         std::cerr << '\n';
     }
@@ -428,6 +437,8 @@ void print_export_result(const ExportParameters& parameters,
     std::cout << "output=" << parameters.output
               << " encoder=" << parameters.encoder
               << " frames=" << result.encoder.frames
+              << " decoder_zero_copy="
+              << (result.decoder_zero_copy ? "true" : "false")
               << " encoding_fps=" << result.encoder.encoding_fps()
               << " video_bytes=" << result.encoder.video_bytes
               << " upload_submit_ms=" << result.gpu.upload_submit_ms
@@ -449,7 +460,9 @@ void print_export_result(const ExportParameters& parameters,
 }
 
 int run_export(const Options& options) {
-    medialab::VideoDecoder decoder(options.input, options.decoder_backend);
+    medialab::VideoDecoder decoder(options.input,
+                                    options.decoder_backend,
+                                    options.zero_copy);
     print_input_info(options.input, decoder);
     medialab::GLRenderer renderer(decoder.width(),
                                   decoder.height(),
@@ -472,6 +485,7 @@ int run_export(const Options& options) {
     parameters.copy_audio = options.copy_audio;
     parameters.max_frames = options.max_frames;
     parameters.decoder_backend = options.decoder_backend;
+    parameters.zero_copy = options.zero_copy;
     const ExportResult result = export_processed_video(options.input,
                                                        parameters,
                                                        renderer,
@@ -482,7 +496,9 @@ int run_export(const Options& options) {
 }
 
 int run_headless(const Options& options) {
-    medialab::VideoDecoder decoder(options.input, options.decoder_backend);
+    medialab::VideoDecoder decoder(options.input,
+                                    options.decoder_backend,
+                                    options.zero_copy);
     print_input_info(options.input, decoder);
 
     medialab::MetricsCollector metrics;
@@ -505,12 +521,14 @@ int run_headless(const Options& options) {
     const double elapsed_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - session_start).count();
     save_metrics(options, metrics, elapsed_seconds);
+    std::cout << "decoder_zero_copy="
+              << (decoder.zero_copy_active() ? "true" : "false") << '\n';
     return 0;
 }
 
 int run_interactive(const Options& options) {
     auto decoder = std::make_unique<medialab::VideoDecoder>(
-        options.input, options.decoder_backend);
+        options.input, options.decoder_backend, options.zero_copy);
     print_input_info(options.input, *decoder);
 
     medialab::InteractiveState state;
@@ -569,6 +587,7 @@ int run_interactive(const Options& options) {
             parameters.copy_audio = state.export_copy_audio;
             parameters.max_frames = options.max_frames;
             parameters.decoder_backend = decoder->backend();
+            parameters.zero_copy = options.zero_copy;
             if (state.export_quality_report) {
                 parameters.quality_output = state.export_path + ".quality.json";
             }
@@ -617,7 +636,7 @@ int run_interactive(const Options& options) {
                     ? medialab::DecoderBackend::VideoToolbox
                     : medialab::DecoderBackend::Software;
                 auto replacement = std::make_unique<medialab::VideoDecoder>(
-                    state.input_path, requested_backend);
+                    state.input_path, requested_backend, options.zero_copy);
                 print_input_info(state.input_path, *replacement);
                 decoder = std::move(replacement);
                 state.active_decoder = decoder->backend_description();

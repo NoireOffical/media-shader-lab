@@ -1,10 +1,12 @@
 # Media Shader Lab：实时视频处理与 Shader 实验平台
 
+[![CI](https://github.com/NoireOffical/media-shader-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/NoireOffical/media-shader-lab/actions/workflows/ci.yml)
+
 简体中文 | [English](README.md)
 
 Media Shader Lab 是一个使用 C++17、FFmpeg、OpenGL、GLSL 和 Dear ImGui 实现的端到端视频处理项目。项目完成压缩视频解封装与解码、GPU Shader 实时处理、离屏帧缓冲回读、H.265 软硬件编码、源音频复用、MP4 封装和编码后画质评估，适合作为音视频、图形渲染及媒体基础架构方向的作品集项目。
 
-当前 0.2 版本没有使用上层播放器框架封装媒体链路，而是保留了从压缩码流、GPU 处理到重新编码输出的完整数据路径，便于理解、调试和性能分析。
+当前 0.3 版本没有使用上层播放器框架封装媒体链路，而是保留了从压缩码流、GPU 处理到重新编码输出的完整数据路径，便于理解、调试和性能分析。
 
 ## 项目目标
 
@@ -17,6 +19,8 @@ Media Shader Lab 是一个使用 C++17、FFmpeg、OpenGL、GLSL 和 Dear ImGui �
 
 - 使用 FFmpeg 完成视频解封装与解码；
 - 支持 FFmpeg 软件解码与 macOS VideoToolbox 硬件解码动态切换；
+- 对 VideoToolbox 输出的 NV12 `CVPixelBuffer` 做引用计数托管，将 IOSurface 双平面直接绑定为 OpenGL 纹理，并在 GLSL 中完成 YUV→RGB；
+- 对不支持的硬件像素格式或非 IOSurface 帧自动回退到 CPU 转换，也可用 `--no-zero-copy` 强制运行回拷基线；
 - 正确处理 packet/frame 背压、`EAGAIN` 和解码器 flush；
 - 使用 `libswscale` 将解码帧转换为 RGB24；
 - 使用 OpenGL 完成纹理创建、视频帧上传和全屏渲染；
@@ -39,6 +43,8 @@ Media Shader Lab 是一个使用 C++17、FFmpeg、OpenGL、GLSL 和 Dear ImGui �
 - 支持 CRF、preset、目标码率、GOP、音频复制和导出取消；
 - 对 H.265 输出进行回解，并以编码前 Shader 结果为基准计算 PSNR、8×8 亮度 SSIM 和 VMAF；
 - 提供指标单测、关键帧 seek 测试和 H.265 编码—回解集成测试。
+- 提供可复现基准工具，自动生成包含设备、提交号、素材 SHA-256 和逐次运行数据的 JSON/CSV；
+- 通过 GitHub Actions 在 Linux/macOS 构建测试，并运行 ASan、UBSan 与 CodeQL。
 
 ## 可视化效果
 
@@ -60,14 +66,10 @@ FFmpeg Demuxer
      │  AVPacket
      ▼
 FFmpeg Decoder
-     │  AVFrame / YUV
-     ▼
-libswscale 像素格式转换
-     │  RGB24
-     ├──────────────────► 无窗口解码测试 ──► metrics.json
-     │
-     ▼
-OpenGL 纹理上传
+     ├── 软件帧 / 不支持的硬件帧 ──► libswscale ──► RGB24 / PBO 上传 ──┐
+     └── VideoToolbox NV12 ──► CVPixelBuffer / IOSurface 零拷贝 ──────┤
+                                                                      ▼
+                                                               OpenGL 纹理
      │
      ▼
 GLSL 实时滤镜
@@ -96,7 +98,7 @@ libx265 / VideoToolbox H.265 编码
      └──────────────────► PSNR / SSIM / VMAF JSON
 ```
 
-视频处理流程分为三层：
+视频处理流程分为四层：
 
 1. **媒体层**：负责解封装、解码、RGB/YUV 转换、H.265 编码、音频复用和 MP4 封装；
 2. **渲染层**：负责 OpenGL 上下文、纹理上传、Shader 执行、离屏处理和画面显示；
@@ -132,7 +134,8 @@ media-shader-lab/
 │   └── VideoEncoderIntegrationTest.cpp
 └── scripts/
     ├── build_ffmpeg_with_vmaf.sh # 固定版本的 libvmaf/FFmpeg 构建脚本
-    └── check_dependencies.sh
+    ├── check_dependencies.sh
+    └── benchmark_pipeline.py     # 可复现软/硬解、零拷贝与 PBO 对照
 ```
 
 ## 环境要求
@@ -255,6 +258,7 @@ ffmpeg -f lavfi \
 | `--max-frames N` | 最多处理 N 帧，0 表示处理到视频结束 |
 | `--no-sync` | 不根据 PTS 等待，以最快速度处理视频 |
 | `--no-pbo` | 关闭异步 PBO，使用同步上传/回读基线 |
+| `--no-zero-copy` | 强制 VideoToolbox 帧回拷到 CPU，用于兼容与 A/B 对照 |
 | `--metrics-output PATH` | 将最终统计结果写入 JSON 文件 |
 | `--snapshot PATH` | 隐藏窗口渲染一帧并输出为 PPM 图片 |
 | `--ui-snapshot PATH` | 隐藏窗口渲染一帧，并在图片中包含控制台 |
@@ -339,11 +343,33 @@ ffmpeg -f lavfi \
 - `average_ssim`：编码后回解帧的平均 8×8 亮度 SSIM；
 - `average_vmaf`：编码后回解帧的平均 VMAF，并通过 `vmaf_model` 记录模型版本。
 
-交互面板额外显示上传提交时间、Timer Query 得到的 Shader GPU 时间、回读提交时间和 PBO 映射等待时间。VideoToolbox 当前通过 `av_hwframe_transfer_data` 将硬件帧转回系统内存后进入 RGB/OpenGL 链路，因此已经完成硬件解码，但还不是零拷贝。
+交互面板额外显示上传提交时间、Timer Query 得到的 Shader GPU 时间、回读提交时间和 PBO 映射等待时间。VideoToolbox 对符合条件的 NV12 帧直接使用 IOSurface 双平面纹理；如像素格式或存储不兼容，则自动通过 `av_hwframe_transfer_data` 回退到系统内存。
 
 在 Apple M5 Pro、720p/30 FPS、300 帧 Edge Shader、VideoToolbox H.265 编码条件下，本次对照结果为：PBO 开启后吞吐从 236.16 FPS 提升至 303.41 FPS（约 +28.5%），回读提交从 1.019 ms 降至 0.030 ms；输出帧数、码量及 PSNR/SSIM/VMAF 与同步路径保持一致。该数字仅代表当前设备和测试素材。
 
 正式发布性能数据时，应同时注明：测试设备、操作系统、视频分辨率、帧率、编码格式、码率、输入时长和构建模式，保证结果可以复现。
+
+## 可复现基准测试
+
+Release 构建完成后执行：
+
+```bash
+python3 scripts/benchmark_pipeline.py
+```
+
+默认使用仓库内同一段 720p/30 FPS 素材，各运行 300 帧、重复 3 次并取中位数，覆盖：
+
+- FFmpeg 软件解码；
+- VideoToolbox 硬解后 CPU 回拷；
+- VideoToolbox `CVPixelBuffer`/IOSurface 零拷贝；
+- OpenGL 同步上传/回读；
+- 双 PBO 异步上传/回读。
+
+结果写入 `build/benchmarks/<时间>/benchmark.json` 和 `benchmark.csv`，并保留每次运行日志与导出视频。报告自动记录 Git commit、工作区是否有未提交修改、设备/系统、输入 SHA-256、帧数、滤镜、编码器和完整命令。可用 `--frames 60 --repeats 1` 快速冒烟验证，用 `--decode-only` 只测解码，用 `--quality` 同时生成 PSNR/SSIM/VMAF 报告。
+
+## 持续集成
+
+每次推送及 Pull Request 都会在 Linux、macOS 上执行 Release 构建和单元/集成测试；Linux 另有 ASan/UBSan 内存与未定义行为检查，编译链路同时接入 CodeQL。Dependabot 每周检查 GitHub Actions 版本。
 
 ## 技术亮点
 
@@ -355,19 +381,20 @@ ffmpeg -f lavfi \
 6. **工具化交互能力**：使用 Dear ImGui 将播放、seek、滤镜、编码导出和性能曲线组合为统一工作台；
 7. **可验证性**：通过 H.265 编码—MP4 封装—回解测试验证帧数、时长和 flush，并用 PSNR/SSIM/VMAF 验证压缩质量。
 8. **可量化优化**：通过 PBO 开关和 OpenGL Timer Query 对同步/异步传输做同源 A/B 测试，区分 CPU 提交、GPU Shader 与同步等待。
+9. **硬解零拷贝**：对 `CVPixelBuffer` 做安全生命周期托管，将 NV12 IOSurface 双平面直接绑定到 GPU，并保留可观测、可强制切换的 CPU 回退路径。
+10. **工程可复现性**：同一脚本固化测试矩阵、输入校验值和设备环境，CI 覆盖双平台、Sanitizer 与静态安全扫描。
 
 ## 后续路线
 
-1. 将 VideoToolbox `CVPixelBuffer`/IOSurface 直接映射为 GPU 纹理，消除当前硬件帧转 RGB 的拷贝；
-2. 在 Timer Query 基础上增加 CPU/GPU 利用率、功耗和显存占用；
-3. 接入 ONNX Runtime，实现可选的人像分割、超分辨率或风格化处理；
-4. 将渲染后端迁移至 Vulkan，并发布可复现的性能对比报告。
+1. 在 Timer Query 基础上增加 CPU/GPU 利用率、功耗和显存占用；
+2. 接入 ONNX Runtime，实现可选的人像分割、超分辨率或风格化处理；
+3. 将渲染后端迁移至 Vulkan，并使用现有基准工具发布后端性能对比。
 
 ## 简历表述建议
 
 完成 MVP 并取得可复现的测试数据后，可以写为：
 
-> 基于 C++17、FFmpeg 与 OpenGL/GLSL 打通“软/硬件解码—GPU 处理—H.265 编码—MP4 封装—画质评估”完整链路，实现 VideoToolbox 解码、双 PBO 异步传输、Timer Query GPU 分阶段分析、编码器延迟帧排空与音频复用；源码构建启用 libvmaf 的 FFmpeg 工具链，并基于 PSNR、SSIM、VMAF、吞吐及码量进行可复现评测。
+> 基于 C++17、FFmpeg 与 OpenGL/GLSL 打通“软/硬件解码—GPU 处理—H.265 编码—MP4 封装—画质评估”完整链路，将 VideoToolbox NV12 `CVPixelBuffer`/IOSurface 双平面直接映射为 GPU 纹理并设计 CPU 回退，实现双 PBO 异步传输与 Timer Query 分阶段分析；固化同源 A/B 基准并接入 Linux/macOS CI、ASan/UBSan 和 CodeQL。
 
 简历中的性能数字应来自真实测试，避免在没有注明设备、分辨率、编码格式和测试样本的情况下填写估算结果。
 
@@ -389,11 +416,14 @@ ffmpeg -f lavfi \
 - [x] libx265 H.265 编码与 MP4 封装；
 - [x] VideoToolbox 硬件 H.265 编码；
 - [x] VideoToolbox H.264/H.265 硬件解码与软件解码切换；
+- [x] VideoToolbox `CVPixelBuffer`/IOSurface NV12 双平面零拷贝渲染与 CPU 回退；
 - [x] PBO 双缓冲异步上传/回读与尾帧 flush；
 - [x] OpenGL Timer Query 和传输等待分阶段指标；
 - [x] 源音频复用、时长裁剪和取消导出；
 - [x] PSNR、8×8 亮度 SSIM 和 VMAF 画质评估；
 - [x] H.265 编码、flush、时长和回解集成测试；
+- [x] 可复现软/硬解、零拷贝和 PBO 对照基准（JSON/CSV）；
+- [x] Linux/macOS CI、ASan/UBSan 与 CodeQL；
 - [ ] AI 视频处理模块。
 
 ## 许可证

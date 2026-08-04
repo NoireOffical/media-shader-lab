@@ -29,7 +29,7 @@ LOCAL_PKG_CONFIG_PATH := $(PKG_CONFIG_PATH)
 LOCAL_PATH := $(PATH)
 endif
 
-.PHONY: test-core check-deps configure build test clean
+.PHONY: test-core check-deps configure build test benchmark clean
 
 test-core:
 	@mkdir -p build/core
@@ -48,6 +48,9 @@ build: configure
 
 test: build
 	$(CTEST_BIN) --test-dir build --output-on-failure
+
+benchmark: build
+	python3 scripts/benchmark_pipeline.py
 
 clean:
 	$(RM) build/core/metrics_test

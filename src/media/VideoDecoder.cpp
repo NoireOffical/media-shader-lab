@@ -4,6 +4,11 @@
 #include <stdexcept>
 #include <utility>
 
+#if defined(__APPLE__)
+#include <CoreVideo/CoreVideo.h>
+#include <CoreVideo/CVPixelBufferIOSurface.h>
+#endif
+
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -25,6 +30,24 @@ std::string ffmpeg_error(int code) {
 void require_ok(int result, const std::string& operation) {
     if (result < 0) {
         throw std::runtime_error(operation + ": " + ffmpeg_error(result));
+    }
+}
+
+VideoColorMatrix color_matrix_for(AVColorSpace color_space) noexcept {
+    switch (color_space) {
+        case AVCOL_SPC_BT470BG:
+        case AVCOL_SPC_SMPTE170M:
+        case AVCOL_SPC_SMPTE240M:
+            return VideoColorMatrix::Bt601;
+        case AVCOL_SPC_BT2020_NCL:
+        case AVCOL_SPC_BT2020_CL:
+            return VideoColorMatrix::Bt2020;
+        case AVCOL_SPC_BT709:
+            return VideoColorMatrix::Bt709;
+        default:
+            // Match libswscale's default coefficients for streams that do not
+            // carry color-space metadata, so software and zero-copy paths agree.
+            return VideoColorMatrix::Bt601;
     }
 }
 
@@ -51,8 +74,11 @@ DecoderBackend parse_decoder_backend(const std::string& value) {
 
 class VideoDecoder::Impl {
 public:
-    explicit Impl(const std::string& input_path, DecoderBackend backend_value)
-        : selected_backend(backend_value) {
+    explicit Impl(const std::string& input_path,
+                  DecoderBackend backend_value,
+                  bool prefer_zero_copy_value)
+        : selected_backend(backend_value),
+          prefer_zero_copy(prefer_zero_copy_value) {
         require_ok(avformat_open_input(&format, input_path.c_str(), nullptr, nullptr),
                    "could not open input");
         try {
@@ -250,6 +276,44 @@ public:
     }
 
     void convert(const AVFrame* source, VideoFrame& output) {
+        output.hardware_surface.reset();
+        output.hardware_format = HardwareSurfaceFormat::None;
+        output.color_matrix = color_matrix_for(source->colorspace);
+
+#if defined(__APPLE__)
+        if (prefer_zero_copy && source->format == hardware_pixel_format &&
+            source->data[3] != nullptr) {
+            auto pixel_buffer = reinterpret_cast<CVPixelBufferRef>(source->data[3]);
+            const OSType pixel_format = CVPixelBufferGetPixelFormatType(pixel_buffer);
+            HardwareSurfaceFormat surface_format = HardwareSurfaceFormat::None;
+            if (pixel_format == kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange) {
+                surface_format = HardwareSurfaceFormat::Nv12VideoRange;
+            } else if (pixel_format ==
+                       kCVPixelFormatType_420YpCbCr8BiPlanarFullRange) {
+                surface_format = HardwareSurfaceFormat::Nv12FullRange;
+            }
+            if (surface_format != HardwareSurfaceFormat::None &&
+                CVPixelBufferGetPlaneCount(pixel_buffer) == 2 &&
+                CVPixelBufferGetIOSurface(pixel_buffer) != nullptr) {
+                CVPixelBufferRetain(pixel_buffer);
+                output.hardware_surface = std::shared_ptr<void>(
+                    pixel_buffer,
+                    [](void* surface) {
+                        CVPixelBufferRelease(
+                            static_cast<CVPixelBufferRef>(surface));
+                    });
+                output.hardware_format = surface_format;
+                output.width = source->width;
+                output.height = source->height;
+                output.rgb.clear();
+                hardware_frame_received = true;
+                zero_copy_frame_received = true;
+                set_timestamp(source, output);
+                return;
+            }
+        }
+#endif
+
         const AVFrame* readable = source;
         if (source->format == hardware_pixel_format) {
             av_frame_unref(software_frame);
@@ -286,6 +350,10 @@ public:
                   destination,
                   destination_stride);
 
+        set_timestamp(source, output);
+    }
+
+    void set_timestamp(const AVFrame* source, VideoFrame& output) {
         const std::int64_t timestamp = source->best_effort_timestamp;
         if (timestamp != AV_NOPTS_VALUE) {
             output.pts_seconds = static_cast<double>(timestamp) * av_q2d(stream->time_base);
@@ -340,11 +408,14 @@ public:
     std::string codec_label;
     DecoderBackend selected_backend = DecoderBackend::Software;
     bool hardware_frame_received = false;
+    bool zero_copy_frame_received = false;
+    bool prefer_zero_copy = true;
 };
 
 VideoDecoder::VideoDecoder(const std::string& input_path,
-                           DecoderBackend backend)
-    : impl_(std::make_unique<Impl>(input_path, backend)) {}
+                           DecoderBackend backend,
+                           bool prefer_zero_copy)
+    : impl_(std::make_unique<Impl>(input_path, backend, prefer_zero_copy)) {}
 
 VideoDecoder::~VideoDecoder() = default;
 VideoDecoder::VideoDecoder(VideoDecoder&&) noexcept = default;
@@ -360,10 +431,21 @@ std::string VideoDecoder::codec_name() const { return impl_->codec_label; }
 DecoderBackend VideoDecoder::backend() const noexcept {
     return impl_->selected_backend;
 }
+bool VideoDecoder::zero_copy_active() const noexcept {
+    return impl_->zero_copy_frame_received;
+}
 std::string VideoDecoder::backend_description() const {
     if (impl_->selected_backend == DecoderBackend::VideoToolbox) {
-        return impl_->hardware_frame_received
-            ? "VideoToolbox hardware (active)"
+        if (impl_->zero_copy_frame_received) {
+            return "VideoToolbox hardware (IOSurface zero-copy)";
+        }
+        if (impl_->hardware_frame_received) {
+            return impl_->prefer_zero_copy
+                ? "VideoToolbox hardware (CPU fallback)"
+                : "VideoToolbox hardware (CPU transfer)";
+        }
+        return impl_->prefer_zero_copy
+            ? "VideoToolbox hardware (zero-copy requested)"
             : "VideoToolbox hardware";
     }
     return "FFmpeg software";

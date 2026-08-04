@@ -1,5 +1,7 @@
 # Media Shader Lab
 
+[![CI](https://github.com/NoireOffical/media-shader-lab/actions/workflows/ci.yml/badge.svg)](https://github.com/NoireOffical/media-shader-lab/actions/workflows/ci.yml)
+
 [简体中文](README.zh-CN.md) | English
 
 A small end-to-end video pipeline built with C++17, FFmpeg, OpenGL, GLSL, and Dear ImGui. It decodes compressed video, applies interactive GPU effects, exports the processed framebuffer as H.265/MP4, preserves source audio, and measures playback, encoding, and compression quality.
@@ -15,7 +17,8 @@ make test-core
 ## What it demonstrates
 
 - FFmpeg software decoding and selectable VideoToolbox hardware decoding with correct packet/frame back-pressure, seeking, and flushing
-- Pixel-format conversion through `libswscale`
+- Zero-copy VideoToolbox rendering: retained NV12 `CVPixelBuffer`/IOSurface planes are bound directly to OpenGL rectangle textures and converted in GLSL
+- Pixel-format conversion through `libswscale` as the portable software and unsupported-surface fallback
 - OpenGL texture upload and a GLSL full-screen rendering pipeline
 - Interactive grayscale, sepia, edge-detection, and vignette filters
 - Dear ImGui controls for file loading, drag and drop, play/pause, seeking, and shader parameters
@@ -27,7 +30,9 @@ make test-core
 - MP4 muxing with optional source-audio stream copy and deterministic timestamps
 - Post-encode PSNR, 8x8 luma SSIM, and VMAF evaluation against the pre-encode Shader output
 - Headless decode benchmarking and JSON metrics export
+- A reproducible benchmark harness that records device/build/input metadata and compares software, hardware-copy, zero-copy, synchronous, and PBO paths in JSON/CSV
 - Unit and integration tests for metrics, seeking, H.265 encoding, flushing, and decode round trips
+- GitHub Actions builds/tests on Linux and macOS, plus ASan/UBSan and CodeQL scanning
 
 ## Visual result
 
@@ -45,12 +50,12 @@ The following comparison was captured from the application's OpenGL framebuffer 
 Compressed video
       │
       ▼
-FFmpeg demuxer → software / VideoToolbox decoder → libswscale (RGB24)
-                                  │
-                                  ├── headless benchmark → metrics.json
-                                  │
-                                  ▼
-                         OpenGL texture upload
+FFmpeg demuxer → software / VideoToolbox decoder
+                 ├── libswscale → RGB24 → PBO / synchronous upload ─┐
+                 ├── retained CVPixelBuffer / IOSurface (NV12) ─────┤
+                 └── headless benchmark → metrics.json              │
+                                                                    ▼
+                                                           OpenGL textures
                                   │
                                   ▼
                     GLSL filter → window display
@@ -166,7 +171,21 @@ Export the processed frames as H.265, copy the source audio, and write a quality
 
 Use `--encoder hevc_videotoolbox --bitrate-kbps 6000` for macOS hardware encoding. Use `--no-audio` for a video-only output. The same controls are available in the interactive dashboard.
 
-Use `--decoder videotoolbox` to select macOS hardware decoding and `--no-pbo` to run the synchronous transfer baseline. The dashboard exposes both switches and reports upload submission, exact GPU Shader, readback submission, and PBO map-wait time.
+Use `--decoder videotoolbox` to select macOS hardware decoding. Eligible NV12 frames use the IOSurface zero-copy path automatically; `--no-zero-copy` forces the CPU-transfer baseline. Use `--no-pbo` to run the synchronous upload/readback baseline. The dashboard reports upload submission, exact GPU Shader, readback submission, and PBO map-wait time.
+
+## Reproducible benchmark
+
+After a release build, run the standard 300-frame, three-repeat benchmark:
+
+```bash
+python3 scripts/benchmark_pipeline.py
+```
+
+It compares software decoding, VideoToolbox CPU transfer, VideoToolbox IOSurface zero-copy, synchronous OpenGL transfer, and PBO transfer. Results are written under `build/benchmarks/<timestamp>/benchmark.json` and `benchmark.csv`, together with per-run logs and outputs. The report records the Git commit, dirty-tree state, machine/OS, input SHA-256, frame count, filter, encoder, and individual commands. Use `--frames 60 --repeats 1` for a quick smoke run, `--decode-only` on a machine without a display, and `--quality` to add PSNR/SSIM/VMAF reports.
+
+## Continuous integration
+
+Every push and pull request builds and tests the project on Linux and macOS. A separate Linux job runs AddressSanitizer and UndefinedBehaviorSanitizer, while CodeQL scans the compiled C++ path. Dependabot checks GitHub Actions versions weekly.
 
 ## Metrics
 
@@ -174,14 +193,13 @@ The live dashboard shows playback FPS over the most recent one-second window, av
 
 ## Roadmap
 
-1. Map VideoToolbox `CVPixelBuffer`/IOSurface surfaces directly to GPU textures to remove the current hardware-frame-to-RGB copy.
-2. Add CPU/GPU utilization, power, and memory telemetry around the existing Timer Query measurements.
-3. Add an optional ONNX Runtime stage for segmentation or super-resolution.
-4. Port the renderer to Vulkan and publish a reproducible performance report.
+1. Add CPU/GPU utilization, power, and memory telemetry around the existing Timer Query measurements.
+2. Add an optional ONNX Runtime stage for segmentation or super-resolution.
+3. Port the renderer to Vulkan and compare the backends with the existing benchmark harness.
 
 ## Resume-ready description
 
-> Built an end-to-end C++17 video pipeline with FFmpeg and OpenGL/GLSL, including selectable software/VideoToolbox decoding, double-buffered PBO transfer, Timer Query GPU profiling, H.265 software/hardware encoding, audio remuxing, and MP4 output; built a pinned libvmaf-enabled toolchain and reproducible latency, throughput, PSNR, SSIM, and VMAF evaluation.
+> Built an end-to-end C++17 video pipeline with FFmpeg and OpenGL/GLSL, including direct VideoToolbox CVPixelBuffer/IOSurface-to-GPU rendering with an automatic CPU fallback, double-buffered PBO transfer, Timer Query profiling, H.265 software/hardware encoding, audio remuxing, and reproducible latency, throughput, PSNR, SSIM, and VMAF evaluation; added Linux/macOS CI, sanitizers, and CodeQL.
 
 The interactive dashboard uses vendored Dear ImGui 1.92.8 under its MIT License; see [third-party notices](THIRD_PARTY_NOTICES.md).
 

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(MediaShaderLab VERSION 0.2.0 LANGUAGES CXX)
+project(MediaShaderLab VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -16,6 +16,11 @@ pkg_check_modules(FFMPEG REQUIRED IMPORTED_TARGET
 pkg_check_modules(LIBVMAF QUIET IMPORTED_TARGET libvmaf)
 find_package(glfw3 CONFIG REQUIRED)
 find_package(OpenGL REQUIRED)
+
+if(APPLE)
+    find_library(COREVIDEO_FRAMEWORK CoreVideo REQUIRED)
+    find_library(IOSURFACE_FRAMEWORK IOSurface REQUIRED)
+endif()
 
 if(NOT APPLE)
     find_package(GLEW REQUIRED)
@@ -67,6 +72,13 @@ target_link_libraries(media_shader_lab PRIVATE
     OpenGL::GL
 )
 
+if(APPLE)
+    target_link_libraries(media_shader_lab PRIVATE
+        ${COREVIDEO_FRAMEWORK}
+        ${IOSURFACE_FRAMEWORK}
+    )
+endif()
+
 if(NOT APPLE)
     target_link_libraries(media_shader_lab PRIVATE GLEW::GLEW)
 endif()
@@ -106,6 +118,12 @@ if(BUILD_TESTING)
     )
     target_include_directories(decoder_seek_test PRIVATE include)
     target_link_libraries(decoder_seek_test PRIVATE PkgConfig::FFMPEG)
+    if(APPLE)
+        target_link_libraries(decoder_seek_test PRIVATE
+            ${COREVIDEO_FRAMEWORK}
+            ${IOSURFACE_FRAMEWORK}
+        )
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(decoder_seek_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(decoder_seek_test PRIVATE -UNDEBUG)
@@ -118,6 +136,12 @@ if(BUILD_TESTING)
     )
     target_include_directories(encoder_integration_test PRIVATE include)
     target_link_libraries(encoder_integration_test PRIVATE PkgConfig::FFMPEG)
+    if(APPLE)
+        target_link_libraries(encoder_integration_test PRIVATE
+            ${COREVIDEO_FRAMEWORK}
+            ${IOSURFACE_FRAMEWORK}
+        )
+    endif()
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(encoder_integration_test PRIVATE -Wall -Wextra -Wpedantic)
         target_compile_options(encoder_integration_test PRIVATE -UNDEBUG)

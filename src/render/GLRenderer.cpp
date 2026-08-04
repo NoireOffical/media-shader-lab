@@ -21,6 +21,11 @@
 #include "imgui_stdlib.h"
 
 #if defined(__APPLE__)
+#include <CoreVideo/CoreVideo.h>
+#include <CoreVideo/CVPixelBufferIOSurface.h>
+#include <IOSurface/IOSurface.h>
+#include <OpenGL/CGLIOSurface.h>
+#include <OpenGL/OpenGL.h>
 #include <OpenGL/gl3.h>
 #else
 #include <GL/glew.h>
@@ -81,6 +86,19 @@ GLuint create_program(const std::string& vertex_source,
     glGetProgramInfoLog(program, length, nullptr, log.data());
     glDeleteProgram(program);
     throw std::runtime_error("shader program link failed: " + log);
+}
+
+std::string shader_variant(const std::string& source,
+                           const std::string& define) {
+    const std::size_t first_line_end = source.find('\n');
+    if (source.rfind("#version", 0) != 0 ||
+        first_line_end == std::string::npos) {
+        throw std::runtime_error(
+            "shader source must begin with a #version directive");
+    }
+    return source.substr(0, first_line_end + 1) +
+           "#define " + define + " 1\n" +
+           source.substr(first_line_end + 1);
 }
 
 class SampleWindow {
@@ -246,9 +264,16 @@ public:
             }
 #endif
 
-            program = create_program(
-                read_text(shader_directory + "/video.vert"),
-                read_text(shader_directory + "/video.frag"));
+            const std::string vertex_source =
+                read_text(shader_directory + "/video.vert");
+            const std::string fragment_source =
+                read_text(shader_directory + "/video.frag");
+            program = create_program(vertex_source, fragment_source);
+#if defined(__APPLE__)
+            hardware_program = create_program(
+                vertex_source,
+                shader_variant(fragment_source, "VIDEO_NV12"));
+#endif
 
             const float vertices[] = {
                 -1.0F, -1.0F, 0.0F, 1.0F,
@@ -280,7 +305,26 @@ public:
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            const std::uint8_t placeholder[] = {0, 0, 0};
+            glTexImage2D(GL_TEXTURE_2D,
+                         0,
+                         GL_RGB8,
+                         1,
+                         1,
+                         0,
+                         GL_RGB,
+                         GL_UNSIGNED_BYTE,
+                         placeholder);
             glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+#if defined(__APPLE__)
+            glGenTextures(1, &hardware_luma_texture);
+            glBindTexture(GL_TEXTURE_RECTANGLE, hardware_luma_texture);
+            configure_rectangle_texture();
+            glGenTextures(1, &hardware_chroma_texture);
+            glBindTexture(GL_TEXTURE_RECTANGLE, hardware_chroma_texture);
+            configure_rectangle_texture();
+#endif
 
             glGenBuffers(static_cast<GLsizei>(upload_pbos.size()),
                          upload_pbos.data());
@@ -370,11 +414,109 @@ public:
         }
     }
 
+#if defined(__APPLE__)
+    static void configure_rectangle_texture() {
+        glTexParameteri(GL_TEXTURE_RECTANGLE,
+                        GL_TEXTURE_MIN_FILTER,
+                        GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_RECTANGLE,
+                        GL_TEXTURE_MAG_FILTER,
+                        GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_RECTANGLE,
+                        GL_TEXTURE_WRAP_S,
+                        GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_RECTANGLE,
+                        GL_TEXTURE_WRAP_T,
+                        GL_CLAMP_TO_EDGE);
+    }
+
+    void bind_iosurface_plane(CVPixelBufferRef pixel_buffer,
+                              GLuint texture_id,
+                              std::size_t plane,
+                              GLenum internal_format,
+                              GLenum format) {
+        auto surface = static_cast<IOSurfaceRef>(
+            CVPixelBufferGetIOSurface(pixel_buffer));
+        if (surface == nullptr) {
+            throw std::runtime_error(
+                "VideoToolbox frame is not backed by an IOSurface; "
+                "retry with --no-zero-copy");
+        }
+        const auto plane_width = static_cast<GLsizei>(
+            CVPixelBufferGetWidthOfPlane(pixel_buffer, plane));
+        const auto plane_height = static_cast<GLsizei>(
+            CVPixelBufferGetHeightOfPlane(pixel_buffer, plane));
+        glBindTexture(GL_TEXTURE_RECTANGLE, texture_id);
+        const CGLError result = CGLTexImageIOSurface2D(
+            CGLGetCurrentContext(),
+            GL_TEXTURE_RECTANGLE,
+            internal_format,
+            plane_width,
+            plane_height,
+            format,
+            GL_UNSIGNED_BYTE,
+            surface,
+            static_cast<GLuint>(plane));
+        if (result != kCGLNoError) {
+            throw std::runtime_error(
+                std::string("could not bind VideoToolbox IOSurface plane: ") +
+                CGLErrorString(result) + "; retry with --no-zero-copy");
+        }
+    }
+
+    void upload_hardware_frame(const VideoFrame& frame) {
+        auto pixel_buffer = static_cast<CVPixelBufferRef>(
+            frame.hardware_surface.get());
+        if (pixel_buffer == nullptr ||
+            CVPixelBufferGetPlaneCount(pixel_buffer) != 2) {
+            throw std::runtime_error(
+                "invalid VideoToolbox NV12 surface; retry with --no-zero-copy");
+        }
+        glActiveTexture(GL_TEXTURE1);
+        bind_iosurface_plane(pixel_buffer,
+                             hardware_luma_texture,
+                             0,
+                             GL_R8,
+                             GL_RED);
+        glActiveTexture(GL_TEXTURE2);
+        bind_iosurface_plane(pixel_buffer,
+                             hardware_chroma_texture,
+                             1,
+                             GL_RG8,
+                             GL_RG);
+        hardware_chroma_width = static_cast<int>(
+            CVPixelBufferGetWidthOfPlane(pixel_buffer, 1));
+        hardware_chroma_height = static_cast<int>(
+            CVPixelBufferGetHeightOfPlane(pixel_buffer, 1));
+        width = frame.width;
+        height = frame.height;
+        hardware_format = frame.hardware_format;
+        hardware_color_matrix = frame.color_matrix;
+        using_hardware_texture = true;
+    }
+#endif
+
     void upload_frame(const VideoFrame& frame, bool asynchronous) {
-        ensure_video_texture(frame);
-        const std::size_t bytes = frame.rgb.size();
         const auto submit_start = std::chrono::steady_clock::now();
         upload_timer.begin();
+#if defined(__APPLE__)
+        if (frame.has_hardware_surface()) {
+            upload_hardware_frame(frame);
+            upload_timer.end();
+            upload_submit.add(std::chrono::duration<double, std::milli>(
+                                  std::chrono::steady_clock::now() - submit_start)
+                                  .count());
+            return;
+        }
+#endif
+        if (frame.rgb.size() != static_cast<std::size_t>(frame.width) *
+                                    static_cast<std::size_t>(frame.height) * 3U) {
+            upload_timer.end();
+            throw std::runtime_error("video frame has no readable RGB pixels");
+        }
+        using_hardware_texture = false;
+        ensure_video_texture(frame);
+        const std::size_t bytes = frame.rgb.size();
         if (asynchronous) {
             const GLuint pbo = upload_pbos[upload_index];
             upload_index = (upload_index + 1) % upload_pbos.size();
@@ -435,24 +577,55 @@ public:
                     double elapsed_seconds,
                     bool split_view) {
         shader_timer.begin();
-        glUseProgram(program);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, texture);
-        glUniform1i(glGetUniformLocation(program, "u_video"), 0);
-        glUniform1i(glGetUniformLocation(program, "u_filter_mode"),
+        GLuint active_program = program;
+#if defined(__APPLE__)
+        if (using_hardware_texture) {
+            active_program = hardware_program;
+        }
+#endif
+        glUseProgram(active_program);
+#if defined(__APPLE__)
+        if (using_hardware_texture) {
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_RECTANGLE, hardware_luma_texture);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_RECTANGLE, hardware_chroma_texture);
+            glUniform1i(glGetUniformLocation(active_program, "u_video_y"), 1);
+            glUniform1i(glGetUniformLocation(active_program, "u_video_uv"), 2);
+            glUniform1i(
+                glGetUniformLocation(active_program, "u_video_full_range"),
+                hardware_format == HardwareSurfaceFormat::Nv12FullRange
+                    ? GL_TRUE
+                    : GL_FALSE);
+            glUniform1i(glGetUniformLocation(active_program, "u_yuv_matrix"),
+                        static_cast<int>(hardware_color_matrix));
+            glUniform2f(glGetUniformLocation(active_program, "u_video_size"),
+                        static_cast<float>(width),
+                        static_cast<float>(height));
+            glUniform2f(glGetUniformLocation(active_program, "u_chroma_size"),
+                        static_cast<float>(hardware_chroma_width),
+                        static_cast<float>(hardware_chroma_height));
+        } else
+#endif
+        {
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, texture);
+            glUniform1i(glGetUniformLocation(active_program, "u_video"), 0);
+        }
+        glUniform1i(glGetUniformLocation(active_program, "u_filter_mode"),
                     static_cast<int>(state.filter));
-        glUniform2f(glGetUniformLocation(program, "u_texel_size"),
+        glUniform2f(glGetUniformLocation(active_program, "u_texel_size"),
                     1.0F / static_cast<float>(width),
                     1.0F / static_cast<float>(height));
-        glUniform1f(glGetUniformLocation(program, "u_time"),
+        glUniform1f(glGetUniformLocation(active_program, "u_time"),
                     static_cast<float>(elapsed_seconds));
-        glUniform1f(glGetUniformLocation(program, "u_effect_intensity"),
+        glUniform1f(glGetUniformLocation(active_program, "u_effect_intensity"),
                     state.effect_intensity);
-        glUniform1f(glGetUniformLocation(program, "u_edge_strength"),
+        glUniform1f(glGetUniformLocation(active_program, "u_edge_strength"),
                     state.edge_strength);
-        glUniform1f(glGetUniformLocation(program, "u_vignette_strength"),
+        glUniform1f(glGetUniformLocation(active_program, "u_vignette_strength"),
                     state.vignette_strength);
-        glUniform1i(glGetUniformLocation(program, "u_split_view"),
+        glUniform1i(glGetUniformLocation(active_program, "u_split_view"),
                     split_view ? GL_TRUE : GL_FALSE);
         glBindVertexArray(vao);
         glDrawArrays(GL_TRIANGLES, 0, 6);
@@ -530,10 +703,10 @@ public:
     bool readback_frame(const VideoFrame& frame,
                         bool asynchronous,
                         VideoFrame& output) {
-        const VideoFrame metadata{frame.width,
-                                  frame.height,
-                                  frame.pts_seconds,
-                                  {}};
+        VideoFrame metadata;
+        metadata.width = frame.width;
+        metadata.height = frame.height;
+        metadata.pts_seconds = frame.pts_seconds;
         glPixelStorei(GL_PACK_ALIGNMENT, 1);
         readback_timer.begin();
         if (!asynchronous) {
@@ -826,6 +999,14 @@ public:
                 readback_pbos.fill(0);
             }
             if (texture != 0) glDeleteTextures(1, &texture);
+#if defined(__APPLE__)
+            if (hardware_luma_texture != 0) {
+                glDeleteTextures(1, &hardware_luma_texture);
+            }
+            if (hardware_chroma_texture != 0) {
+                glDeleteTextures(1, &hardware_chroma_texture);
+            }
+#endif
             if (export_texture != 0) glDeleteTextures(1, &export_texture);
             if (export_framebuffer != 0) {
                 glDeleteFramebuffers(1, &export_framebuffer);
@@ -833,6 +1014,9 @@ public:
             if (vbo != 0) glDeleteBuffers(1, &vbo);
             if (vao != 0) glDeleteVertexArrays(1, &vao);
             if (program != 0) glDeleteProgram(program);
+#if defined(__APPLE__)
+            if (hardware_program != 0) glDeleteProgram(hardware_program);
+#endif
             glfwDestroyWindow(window);
             window = nullptr;
         }
@@ -844,9 +1028,16 @@ public:
 
     GLFWwindow* window = nullptr;
     GLuint program = 0;
+#if defined(__APPLE__)
+    GLuint hardware_program = 0;
+#endif
     GLuint vao = 0;
     GLuint vbo = 0;
     GLuint texture = 0;
+#if defined(__APPLE__)
+    GLuint hardware_luma_texture = 0;
+    GLuint hardware_chroma_texture = 0;
+#endif
     GLuint export_texture = 0;
     GLuint export_framebuffer = 0;
     std::array<GLuint, 2> upload_pbos{};
@@ -868,6 +1059,11 @@ public:
     int export_height = 0;
     int width = 0;
     int height = 0;
+    int hardware_chroma_width = 1;
+    int hardware_chroma_height = 1;
+    HardwareSurfaceFormat hardware_format = HardwareSurfaceFormat::None;
+    VideoColorMatrix hardware_color_matrix = VideoColorMatrix::Bt601;
+    bool using_hardware_texture = false;
     bool texture_initialized = false;
     bool glfw_initialized = false;
     bool imgui_context_created = false;
