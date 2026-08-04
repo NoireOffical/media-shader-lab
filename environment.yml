@@ -1,0 +1,11 @@
+name: media-shader-lab
+channels:
+  - conda-forge
+dependencies:
+  - cmake>=3.20
+  - ninja
+  - meson>=1.0
+  - nasm>=2.13
+  - pkg-config
+  - ffmpeg>=6
+  - glfw>=3.3

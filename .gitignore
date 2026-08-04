@@ -1,0 +1,33 @@
+/build/
+/.tools/
+/.idea/
+/.vscode/
+.DS_Store
+/imgui.ini
+
+# Local inputs, exports, and quality reports generated from the UI.
+/*.mp4
+/*.quality.json
+/metrics.json
+
+# Dear ImGui is vendored for reproducible builds. Keep only the core sources
+# and the GLFW/OpenGL3 backends used by this project out of its upstream tree.
+/third_party/imgui/imgui_demo.cpp
+/third_party/imgui/.editorconfig
+/third_party/imgui/.gitattributes
+/third_party/imgui/.github/
+/third_party/imgui/.gitignore
+/third_party/imgui/docs/
+/third_party/imgui/examples/
+/third_party/imgui/misc/README.txt
+/third_party/imgui/misc/debuggers/
+/third_party/imgui/misc/fonts/
+/third_party/imgui/misc/freetype/
+/third_party/imgui/misc/single_file/
+/third_party/imgui/misc/cpp/README.txt
+/third_party/imgui/backends/*
+!/third_party/imgui/backends/imgui_impl_glfw.cpp
+!/third_party/imgui/backends/imgui_impl_glfw.h
+!/third_party/imgui/backends/imgui_impl_opengl3.cpp
+!/third_party/imgui/backends/imgui_impl_opengl3.h
+!/third_party/imgui/backends/imgui_impl_opengl3_loader.h
