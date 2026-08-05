@@ -46,32 +46,35 @@ The following comparison was captured from the application's OpenGL framebuffer 
 
 ## Architecture
 
-```text
-Compressed video
-      │
-      ▼
-FFmpeg demuxer → software / VideoToolbox decoder
-                 ├── libswscale → RGB24 → PBO / synchronous upload ─┐
-                 ├── retained CVPixelBuffer / IOSurface (NV12) ─────┤
-                 └── headless benchmark → metrics.json              │
-                                                                    ▼
-                                                           OpenGL textures
-                                  │
-                                  ▼
-                    GLSL filter → window display
-                                  │
-                                  ├── exact-size offscreen framebuffer
-                                  │              │ RGB24
-                                  │              ▼
-                                  │       libswscale → YUV420P
-                                  │              ▼
-                                  │       libx265 / VideoToolbox
-                                  │              ▼
-                                  │     HEVC + source audio → MP4
-                                  │              ▼
-                                  │       decode round trip → PSNR/SSIM/VMAF
-                                  ▼
-                       decode/render latency report
+```mermaid
+flowchart TD
+    A["Compressed video"] --> B["FFmpeg demuxer"]
+    B -->|AVPacket| C["FFmpeg decoder"]
+
+    C --> D["Software frame / hardware fallback"]
+    D --> E["libswscale to RGB24"]
+    E --> F["Synchronous / PBO upload"]
+
+    C --> G["VideoToolbox NV12"]
+    G --> H["CVPixelBuffer / IOSurface zero-copy"]
+
+    F --> I["OpenGL textures"]
+    H --> I
+    I --> J["GLSL real-time filter"]
+
+    J --> K["Dear ImGui interactive window"]
+    J --> L["Exact-size offscreen FBO"]
+    L --> M["Synchronous / double-PBO readback"]
+    M --> N["libswscale: RGB24 to YUV420P / NV12"]
+    N --> O["libx265 / VideoToolbox H.265 encoder"]
+    O -->|HEVC packet| P["Source-audio remux and MP4 muxing"]
+    P --> Q["processed-hevc.mp4"]
+    Q --> R["Decode round trip and frame alignment"]
+    R --> S["PSNR / SSIM / VMAF JSON"]
+
+    C -.-> T["Headless decode metrics.json"]
+    J -.-> U["GPU Shader Timer Query"]
+    M -.-> V["Readback submit and PBO wait metrics"]
 ```
 
 ## Build on macOS

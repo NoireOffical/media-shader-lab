@@ -58,44 +58,35 @@ Media Shader Lab 是一个使用 C++17、FFmpeg、OpenGL、GLSL 和 Dear ImGui �
 
 ## 技术架构
 
-```text
-压缩视频文件
-     │
-     ▼
-FFmpeg Demuxer
-     │  AVPacket
-     ▼
-FFmpeg Decoder
-     ├── 软件帧 / 不支持的硬件帧 ──► libswscale ──► RGB24 / PBO 上传 ──┐
-     └── VideoToolbox NV12 ──► CVPixelBuffer / IOSurface 零拷贝 ──────┤
-                                                                      ▼
-                                                               OpenGL 纹理
-     │
-     ▼
-GLSL 实时滤镜
-     ├──────────────────► Dear ImGui 控制台
-     │                    ├── 文件加载/拖拽
-     │                    ├── 播放、暂停与 seek
-     │                    ├── Shader 参数与分屏
-     │                    └── 实时延迟曲线
-     ├──────────────────► 交互窗口显示与性能统计
-     │
-     ▼
-等分辨率离屏帧缓冲
-     │  RGB24
-     ▼
-libswscale RGB → YUV420P/NV12
-     │
-     ▼
-libx265 / VideoToolbox H.265 编码
-     │  HEVC Packet
-     ▼
-源音频复用与 MP4 封装
-     │
-     ├──────────────────► processed-hevc.mp4
-     ▼
-回解并与编码前 Shader 帧对齐
-     └──────────────────► PSNR / SSIM / VMAF JSON
+```mermaid
+flowchart TD
+    A["压缩视频文件"] --> B["FFmpeg Demuxer"]
+    B -->|AVPacket| C["FFmpeg Decoder"]
+
+    C --> D["软件帧 / 硬件帧回退"]
+    D --> E["libswscale 转 RGB24"]
+    E --> F["同步上传 / PBO 上传"]
+
+    C --> G["VideoToolbox NV12"]
+    G --> H["CVPixelBuffer / IOSurface 零拷贝"]
+
+    F --> I["OpenGL 纹理"]
+    H --> I
+    I --> J["GLSL 实时滤镜"]
+
+    J --> K["Dear ImGui 交互窗口"]
+    J --> L["等分辨率离屏 FBO"]
+    L --> M["同步回读 / 双 PBO 回读"]
+    M --> N["libswscale：RGB24 转 YUV420P / NV12"]
+    N --> O["libx265 / VideoToolbox H.265 编码"]
+    O -->|HEVC Packet| P["源音频复用与 MP4 封装"]
+    P --> Q["processed-hevc.mp4"]
+    Q --> R["回解并与编码前 Shader 帧对齐"]
+    R --> S["PSNR / SSIM / VMAF JSON"]
+
+    C -.-> T["无窗口解码性能与 metrics.json"]
+    J -.-> U["GPU Shader Timer Query"]
+    M -.-> V["回读提交与 PBO 等待指标"]
 ```
 
 视频处理流程分为四层：
