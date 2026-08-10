@@ -36,6 +36,12 @@ make test-core
 
 ## Visual result
 
+### Eight-second real-pipeline walkthrough
+
+[![Media Shader Lab control panel and four-filter comparison](docs/assets/media-shader-demo.gif)](https://github.com/NoireOffical/media-shader-lab/releases/download/v0.3.0/media-shader-lab-demo.mp4)
+
+The clip starts with the application's real Dear ImGui dashboard, then compares moving `original`, `grayscale`, `edge`, and `vignette` output. Every processed panel was decoded by FFmpeg, rendered through the repository's OpenGL/GLSL path, and exported by its H.265 pipeline; only the final layout and GitHub-compatible H.264 packaging were assembled afterward. Click the animation for the full-resolution Release video.
+
 Interactive playback and performance dashboard:
 
 ![Dear ImGui video control panel](docs/assets/control-panel.jpg)

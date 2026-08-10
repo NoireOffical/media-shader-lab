@@ -48,6 +48,12 @@ Media Shader Lab 是一个使用 C++17、FFmpeg、OpenGL、GLSL 和 Dear ImGui �
 
 ## 可视化效果
 
+### 8 秒真实管线演示
+
+[![Media Shader Lab 控制台与四种滤镜动态对比](docs/assets/media-shader-demo.gif)](https://github.com/NoireOffical/media-shader-lab/releases/download/v0.3.0/media-shader-lab-demo.mp4)
+
+演示先展示程序真实的 Dear ImGui 控制台，再动态对比 `original`、`grayscale`、`edge` 与 `vignette` 四路输出。每个处理画面都实际经过仓库中的 FFmpeg 解码、OpenGL/GLSL 渲染和 H.265 导出路径；后期只负责四宫格排版和面向 GitHub 的 H.264 封装。点击动图可查看 Release 附带的高清版本。
+
 交互控制台直接叠加在视频渲染窗口上：
 
 ![Dear ImGui 交互控制台](docs/assets/control-panel.jpg)
